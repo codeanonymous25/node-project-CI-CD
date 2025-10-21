@@ -1,0 +1,12 @@
+
+apiVersion: v2
+name: bmi-app
+version: 0.1.0
+appVersion: "1.0.0"
+description: Node BMI app with Prometheus metrics
+keywords:
+  - node
+  - express
+  - prometheus
+  - openshift
+type: application

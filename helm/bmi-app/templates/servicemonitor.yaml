@@ -1,0 +1,20 @@
+
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: bmi-app-sm
+  labels:
+    {{- toYaml .Values.metrics.serviceMonitor.additionalLabels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app: bmi-app
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  endpoints:
+    - port: http
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      path: {{ .Values.metrics.path }}
+{{- end }}
