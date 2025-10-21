@@ -1,51 +1,77 @@
-// Jenkinsfile
-pipeline {
-  agent any
-  environment {
-    APP_NAME = 'bmi-app'
-    IMAGE_REPO = 'aman932'                    // Docker Hub username
-    IMAGE_NAME = "${IMAGE_REPO}/node-bmi-metrics"
-    VERSION = '01'                            // fixed tag as requested
-    CHART_DIR = 'helm/bmi-app'
-    NAMESPACE = 'aman-3101-dev'
-    SONARQUBE_SERVER = ''                     // set to 'SonarQube' if you use it
-  }
-  stages {
-    stage('Checkout') {
-      steps {
+node {
+    stage("Cloning") {
         checkout scm
-        script { currentBuild.displayName = "#${env.BUILD_NUMBER} ${env.BRANCH_NAME}" }
-      }
     }
-    stage('Node Build & Test') {
-      steps {
-        sh 'node -v && npm -v'
-        sh 'npm ci'
-        sh 'npm test'
-        sh 'npm run lint'
-      }
+
+    stage("Node Build & Test") {
+        sh '''
+        node -v
+        npm -v
+        npm ci
+        npm test
+        npm run lint
+        '''
     }
-    stage('Build & Push Image') {
-      steps {
+
+    stage("Build & Push Image") {
+        sh '''
+        docker build -t aman932/node-bmi-metrics:01 .
+        echo "aman932/node-bmi-metrics:01" > image.tag
+        docker login -u $DOCKERHUB_USER -p $DOCKERHUB_PASS
+        docker push aman932/node-bmi-metrics:01
+        '''
+    }
+
+    stage("Helm Deploy to OpenShift") {
+        sh '''
+        helm upgrade --install bmi-chart helm/bmi-app --namespace aman-3101-dev --create-namespace
+        '''
+    }
+
+    stage("Pods") {
+        sh '''
+        kubectl get pods
+        sleep 10
+        '''
+    }
+
+    stage("Testing") {
         script {
-          def tag = "${IMAGE_NAME}:${VERSION}"
-          docker.withRegistry('https://index.docker.io/v1/', 'dockerhub-creds') {
-            def app = docker.build(tag)
-            app.push()
-          }
-          writeFile file: 'image.tag', text: tag
+            def podStatus = sh(script: 'kubectl get pods | grep ".*bmi-app.*" | grep "Running"', returnStatus: true)
+            if (podStatus == 0) {
+                currentBuild.result = "SUCCESS"
+            } else {
+                currentBuild.result = "FAILURE"
+            }
         }
-      }
     }
-    stage('Helm Deploy to OpenShift') {
-      steps {
+
+    stage("Approval") {
         script {
-          sh "helm upgrade --install bmi-chart ${CHART_DIR} --namespace ${NAMESPACE} --create-namespace"
+            if (env.CHANGE_ID && (currentBuild.result == "SUCCESS" || currentBuild.result == null)) {
+                input message: "Everything correct, do you want to merge?", ok: "Merge"
+            }
         }
-      }
     }
-  }
-  post {
-    always { archiveArtifacts artifacts: 'image.tag', allowEmptyArchive: true }
-  }
+
+    stage("Done") {
+        script {
+            if (currentBuild.result == "SUCCESS" || currentBuild.result == null) {
+                sh '''
+                echo "Everything is working correct!"
+                helm uninstall bmi-chart || echo "Release not found, skipping uninstall"
+                '''
+            } else {
+                echo "Build failed — skipping downstream job."
+            }
+        }
+    }
+
+    stage("Another job") {
+        build job: "bmi-app deployment"
+    }
+
+    stage("Archive") {
+        archiveArtifacts artifacts: 'image.tag', allowEmptyArchive: true
+    }
 }
