@@ -82,12 +82,3 @@ node {
             }
         }
     }
-
-    stage("Another job") {
-        build job: "bmi-app deployment"
-    }
-
-    stage("Archive") {
-        archiveArtifacts artifacts: 'image.tag', allowEmptyArchive: true
-    }
-}
