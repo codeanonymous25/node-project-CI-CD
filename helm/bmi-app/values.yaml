@@ -1,0 +1,48 @@
+
+image:
+  repository: docker.io/aman932/node-bmi-metrics
+  tag: "01"
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 3011
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  fsGroup: 1001
+
+securityContext:
+  allowPrivilegeEscalation: false
+  runAsUser: 1001
+  runAsNonRoot: true
+
+metrics:
+  enabled: true
+  path: /metrics
+  port: "3011"
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+    additionalLabels: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: bmi-app.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
