@@ -1,12 +1,11 @@
+
 pipeline {
   agent any
 
   environment {
-    // ======= Adjust only if your IDs are different in Jenkins =======
-    SONAR_SERVER_NAME          = 'Sonar'          // same server name you used in Flask job
-    SONAR_SCANNER_TOOL         = 'SonarScanner'   // tool name configured in Jenkins
-    DOCKERHUB_CREDENTIALS_ID   = 'dockerhub-creds'// existing DockerHub creds ID in Jenkins
-    // ================================================================
+    SONAR_SERVER_NAME          = 'Sonar'
+    SONAR_SCANNER_TOOL         = 'SonarScanner'
+    DOCKERHUB_CREDENTIALS_ID   = 'dockerhub-creds'
 
     APP_NAME       = 'node-bmi-metrics'
     IMAGE_REPO     = 'docker.io/aman932/node-bmi-metrics'
@@ -42,8 +41,6 @@ pipeline {
 
           echo "Running Jest tests (force exit to avoid open handles)..."
           npm test -- --runInBand --forceExit
-          # If you also want coverage for Sonar, use:
-          # npm test -- --runInBand --forceExit --coverage --coverageReporters=lcov,text
         '''
       }
     }
@@ -56,13 +53,7 @@ pipeline {
         withSonarQubeEnv("${SONAR_SERVER_NAME}") {
           sh '''
             echo "Running SonarQube analysis..."
-            "$SONAR_SCANNER_HOME/bin/sonar-scanner" \
-              -Dsonar.projectKey=node-bmi-metrics \
-              -Dsonar.projectName=Node\\ BMI\\ Metrics \
-              -Dsonar.sources=. \
-              -Dsonar.host.url="$SONAR_HOST_URL"
-              # If you produced coverage, also add:
-              # -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+            "$SONAR_SCANNER_HOME/bin/sonar-scanner"               -Dsonar.projectKey=node-bmi-metrics               -Dsonar.projectName=Node\ BMI\ Metrics               -Dsonar.sources=.               -Dsonar.host.url="$SONAR_HOST_URL"
           '''
         }
       }
@@ -77,12 +68,13 @@ pipeline {
     }
 
     stage('Build & Push Image') {
-      // Skip pushing images for PR builds
-      when { expression { return !env.CHANGE_ID } }
+      when {
+        expression {
+          return !env.CHANGE_ID
+        }
+      }
       steps {
-        withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDENTIALS_ID}",
-                                          usernameVariable: 'DH_USER',
-                                          passwordVariable: 'DH_PASS')]) {
+        withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDENTIALS_ID}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
           sh '''
             set -e
             echo "Building Docker image..."
@@ -102,14 +94,15 @@ pipeline {
     }
 
     stage('Helm Deploy to OpenShift') {
-      when { expression { return !env.CHANGE_ID } }
+      when {
+        expression {
+          return !env.CHANGE_ID
+        }
+      }
       steps {
         sh '''
           echo "Helm upgrade/install..."
-          helm upgrade --install bmi-chart helm/bmi-app \
-            --namespace "${K8S_NAMESPACE}" --create-namespace \
-            --set image.repository="${IMAGE_REPO}" \
-            --set image.tag="${IMAGE_TAG}"
+          helm upgrade --install bmi-chart helm/bmi-app             --namespace "${K8S_NAMESPACE}" --create-namespace             --set image.repository="${IMAGE_REPO}"             --set image.tag="${IMAGE_TAG}"
 
           echo "Waiting for rollout..."
           kubectl rollout status deploy/bmi-chart-deployment -n "${K8S_NAMESPACE}" --timeout=180s
@@ -118,7 +111,11 @@ pipeline {
     }
 
     stage('Verify Pods') {
-      when { expression { return !env.CHANGE_ID } }
+      when {
+        expression {
+          return !env.CHANGE_ID
+        }
+      }
       steps {
         sh '''
           echo "Pods in namespace:"
