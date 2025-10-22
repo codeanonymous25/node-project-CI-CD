@@ -1,99 +1,142 @@
 pipeline {
-    agent any
+  agent any
 
-    environment {
-        DOCKER_IMAGE = "aman932/node-bmi-metrics:01"
-        DOCKER_REGISTRY = "docker.io"
-        NPM_REGISTRY = "https://registry.npmjs.org/"
+  environment {
+    // ======= Adjust only if your IDs are different in Jenkins =======
+    SONAR_SERVER_NAME          = 'Sonar'          // same server name you used in Flask job
+    SONAR_SCANNER_TOOL         = 'SonarScanner'   // tool name configured in Jenkins
+    DOCKERHUB_CREDENTIALS_ID   = 'dockerhub-creds'// existing DockerHub creds ID in Jenkins
+    // ================================================================
+
+    APP_NAME       = 'node-bmi-metrics'
+    IMAGE_REPO     = 'docker.io/aman932/node-bmi-metrics'
+    IMAGE_TAG      = "${BUILD_NUMBER}"
+    K8S_NAMESPACE  = 'aman-3101-dev'
+    NPM_REGISTRY   = 'https://registry.npmjs.org/'
+  }
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+  }
+
+  stages {
+    stage('Cloning') {
+      steps {
+        checkout scm
+      }
     }
 
-    stages {
-        stage('Cloning') {
-            steps {
-                checkout scm
-            }
-        }
+    stage('Node Build & Test') {
+      steps {
+        sh '''
+          echo "Node & npm versions:"
+          node -v
+          npm -v
 
-        stage('Node Build & Test') {
-            steps {
-                sh '''
-                echo "Checking Node.js and npm versions..."
-                node -v
-                npm -v
+          echo "Setting npm registry..."
+          npm config set registry "$NPM_REGISTRY"
 
-                echo "Setting npm registry..."
-                npm config set registry $NPM_REGISTRY
+          echo "Installing dependencies..."
+          npm ci --no-audit --no-fund --prefer-offline
 
-                echo "Installing dependencies..."
-                npm ci --no-audit --no-fund --prefer-offline
-
-                echo "Running tests (force exit to avoid hangs)..."
-                npm test -- --runInBand --forceExit
-                '''
-            }
-        }
-
-        stage('Build & Push Image') {
-            steps {
-                sh '''
-                echo "Building Docker image..."
-                docker build -t $DOCKER_IMAGE .
-
-                echo "Logging into Docker Hub..."
-                echo $DOCKERHUB_PASS | docker login -u $DOCKERHUB_USER --password-stdin
-
-                echo "Pushing image to Docker Hub..."
-                docker push $DOCKER_IMAGE
-                '''
-            }
-        }
-
-        stage('Helm Deploy to OpenShift') {
-            steps {
-                sh '''
-                echo "Deploying with Helm..."
-                helm upgrade --install bmi-chart helm/bmi-app \
-                    --namespace aman-3101-dev --create-namespace \
-                    --set image.repository=$DOCKER_IMAGE
-                '''
-            }
-        }
-
-        stage('Verify Pods') {
-            steps {
-                sh '''
-                echo "Checking pod status..."
-                kubectl get pods -n aman-3101-dev
-                sleep 10
-                '''
-            }
-        }
-
-        stage('Approval') {
-            when {
-                expression { env.CHANGE_ID && currentBuild.result == null }
-            }
-            steps {
-                input message: "Everything correct, do you want to merge?", ok: "Merge"
-            }
-        }
-
-        stage('Cleanup') {
-            steps {
-                sh '''
-                echo "Cleaning up Helm release..."
-                helm uninstall bmi-chart -n aman-3101-dev || echo "Release not found, skipping"
-                '''
-            }
-        }
+          echo "Running Jest tests (force exit to avoid open handles)..."
+          npm test -- --runInBand --forceExit
+          # If you also want coverage for Sonar, use:
+          # npm test -- --runInBand --forceExit --coverage --coverageReporters=lcov,text
+        '''
+      }
     }
 
-    post {
-        success {
-            echo "✅ Pipeline completed successfully!"
+    stage('SonarQube Analysis') {
+      environment {
+        SONAR_SCANNER_HOME = tool "${SONAR_SCANNER_TOOL}"
+      }
+      steps {
+        withSonarQubeEnv("${SONAR_SERVER_NAME}") {
+          sh '''
+            echo "Running SonarQube analysis..."
+            "$SONAR_SCANNER_HOME/bin/sonar-scanner" \
+              -Dsonar.projectKey=node-bmi-metrics \
+              -Dsonar.projectName=Node\\ BMI\\ Metrics \
+              -Dsonar.sources=. \
+              -Dsonar.host.url="$SONAR_HOST_URL"
+              # If you produced coverage, also add:
+              # -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+          '''
         }
-        failure {
-            echo "❌ Pipeline failed. Check logs for details."
-        }
+      }
     }
+
+    stage('Quality Gate') {
+      steps {
+        timeout(time: 5, unit: 'MINUTES') {
+          waitForQualityGate abortPipeline: true
+        }
+      }
+    }
+
+    stage('Build & Push Image') {
+      // Skip pushing images for PR builds
+      when { expression { return !env.CHANGE_ID } }
+      steps {
+        withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDENTIALS_ID}",
+                                          usernameVariable: 'DH_USER',
+                                          passwordVariable: 'DH_PASS')]) {
+          sh '''
+            set -e
+            echo "Building Docker image..."
+            docker build -t "${IMAGE_REPO}:${IMAGE_TAG}" -t "${IMAGE_REPO}:latest" .
+
+            echo "Logging into Docker Hub (non-interactive)..."
+            echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+
+            echo "Pushing image tags..."
+            docker push "${IMAGE_REPO}:${IMAGE_TAG}"
+            docker push "${IMAGE_REPO}:latest"
+
+            docker logout || true
+          '''
+        }
+      }
+    }
+
+    stage('Helm Deploy to OpenShift') {
+      when { expression { return !env.CHANGE_ID } }
+      steps {
+        sh '''
+          echo "Helm upgrade/install..."
+          helm upgrade --install bmi-chart helm/bmi-app \
+            --namespace "${K8S_NAMESPACE}" --create-namespace \
+            --set image.repository="${IMAGE_REPO}" \
+            --set image.tag="${IMAGE_TAG}"
+
+          echo "Waiting for rollout..."
+          kubectl rollout status deploy/bmi-chart-deployment -n "${K8S_NAMESPACE}" --timeout=180s
+        '''
+      }
+    }
+
+    stage('Verify Pods') {
+      when { expression { return !env.CHANGE_ID } }
+      steps {
+        sh '''
+          echo "Pods in namespace:"
+          kubectl get pods -n "${K8S_NAMESPACE}" -o wide
+
+          echo "Services:"
+          kubectl get svc -n "${K8S_NAMESPACE}"
+        '''
+      }
+    }
+  }
+
+  post {
+    success {
+      echo "✅ Success: ${IMAGE_REPO}:${IMAGE_TAG} deployed to ${K8S_NAMESPACE}"
+    }
+    failure {
+      echo "❌ Pipeline failed. Check the stage logs above."
+    }
+  }
 }
