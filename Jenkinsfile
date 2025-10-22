@@ -53,7 +53,7 @@ pipeline {
         withSonarQubeEnv("${SONAR_SERVER_NAME}") {
           sh '''
             echo "Running SonarQube analysis..."
-            "$SONAR_SCANNER_HOME/bin/sonar-scanner"               -Dsonar.projectKey=node-bmi-metrics               -Dsonar.projectName='Node BMI Metrics'               -Dsonar.sources=.               -Dsonar.host.url="$SONAR_HOST_URL"
+            "$SONAR_SCANNER_HOME/bin/sonar-scanner"               -Dsonar.projectKey=node-bmi-metrics               -Dsonar.projectName='Node BMI Metrics'               -Dsonar.sources=src               -Dsonar.tests=tests               -Dsonar.inclusions=src/**/*.js               -Dsonar.test.inclusions=tests/**/*.test.js               -Dsonar.host.url="$SONAR_HOST_URL"
           '''
         }
       }
