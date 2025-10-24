@@ -34,9 +34,10 @@ metrics:
   path: /metrics
   port: "3011"
   serviceMonitor:
-    enabled: false
+    enabled: true
     interval: 15s
-    additionalLabels: {}
+    additionalLabels: 
+      release: kube-prometheus-stack
 
 ingress:
   enabled: false
