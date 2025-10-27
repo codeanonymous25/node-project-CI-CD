@@ -1,93 +1,139 @@
-node {
-    stage("Cloning") {
+
+pipeline {
+  agent any
+
+  environment {
+    SONAR_SERVER_NAME          = 'Sonar'
+    SONAR_SCANNER_TOOL         = 'SonarScanner'
+    DOCKERHUB_CREDENTIALS_ID   = 'dockerhub-creds'
+
+    APP_NAME       = 'node-bmi-metrics'
+    IMAGE_REPO     = 'docker.io/aman932/node-bmi-metrics'
+    IMAGE_TAG      = "${BUILD_NUMBER}"
+    K8S_NAMESPACE  = 'aman-3101-dev'
+    NPM_REGISTRY   = 'https://registry.npmjs.org/'
+  }
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+  }
+
+  stages {
+    stage('Cloning') {
+      steps {
         checkout scm
+      }
     }
 
-    stage("Node Build & Test") {
+    stage('Node Build & Test') {
+      steps {
         sh '''
-        echo "Checking Node.js and npm versions..."
-        node -v
-        npm -v
+          echo "Node & npm versions:"
+          node -v
+          npm -v
 
-        echo "Setting npm registry to avoid timeout issues..."
-        npm config set registry https://registry.npmjs.org/
+          echo "Setting npm registry..."
+          npm config set registry "$NPM_REGISTRY"
 
-        echo "Installing dependencies with retry logic..."
-        npm ci --no-audit --no-fund --prefer-offline || npm ci --no-audit --no-fund --prefer-offline
+          echo "Installing dependencies..."
+          npm ci --no-audit --no-fund --prefer-offline
 
-        echo "Running tests with --detectOpenHandles to avoid hanging..."
-        npm test -- --detectOpenHandles || true
+          echo "Running Jest tests (force exit to avoid open handles)..."
+          npm test -- --runInBand --forceExit
         '''
+      }
     }
 
-    stage("Build & Push Image") {
-        sh '''
-        echo "Building Docker image..."
-        docker build -t aman932/node-bmi-metrics:01 .
-
-        echo "Saving image tag..."
-        echo "aman932/node-bmi-metrics:01" > image.tag
-
-        echo "Logging into Docker Hub..."
-        docker login -u $DOCKERHUB_USER -p $DOCKERHUB_PASS
-
-        echo "Pushing image to Docker Hub..."
-        docker push aman932/node-bmi-metrics:01
-        '''
-    }
-
-    stage("Helm Deploy to OpenShift") {
-        sh '''
-        echo "Deploying with Helm..."
-        helm upgrade --install bmi-chart helm/bmi-app --namespace aman-3101-dev --create-namespace
-        '''
-    }
-
-    stage("Pods") {
-        sh '''
-        echo "Checking pod status..."
-        kubectl get pods
-        sleep 10
-        '''
-    }
-
-    stage("Testing") {
-        script {
-            def podStatus = sh(script: 'kubectl get pods | grep ".*bmi-app.*" | grep "Running"', returnStatus: true)
-            if (podStatus == 0) {
-                currentBuild.result = "SUCCESS"
-            } else {
-                currentBuild.result = "FAILURE"
-            }
+    stage('SonarQube Analysis') {
+      environment {
+        SONAR_SCANNER_HOME = tool "${SONAR_SCANNER_TOOL}"
+      }
+      steps {
+        withSonarQubeEnv("${SONAR_SERVER_NAME}") {
+          sh '''
+            echo "Running SonarQube analysis..."
+            "$SONAR_SCANNER_HOME/bin/sonar-scanner"               -Dsonar.projectKey=node-bmi-metrics               -Dsonar.projectName='Node BMI Metrics'               -Dsonar.sources=src               -Dsonar.tests=tests               -Dsonar.inclusions=src/**/*.js               -Dsonar.test.inclusions=tests/**/*.test.js               -Dsonar.host.url="$SONAR_HOST_URL"
+          '''
         }
+      }
     }
 
-    stage("Approval") {
-        script {
-            if (env.CHANGE_ID && (currentBuild.result == "SUCCESS" || currentBuild.result == null)) {
-                input message: "Everything correct, do you want to merge?", ok: "Merge"
-            }
+    stage('Quality Gate') {
+      steps {
+        timeout(time: 5, unit: 'MINUTES') {
+          waitForQualityGate abortPipeline: true
         }
+      }
     }
 
-    stage("Done") {
-        script {
-            if (currentBuild.result == "SUCCESS" || currentBuild.result == null) {
-                sh '''
-                echo "Everything is working correct!"
-                helm uninstall bmi-chart || echo "Release not found, skipping uninstall"
-                '''
-            } else {
-                echo "Build failed — skipping downstream job."
-            }
+    stage('Build & Push Image') {
+      when {
+        expression {
+          return !env.CHANGE_ID
         }
+      }
+      steps {
+        withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDENTIALS_ID}", usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+          sh '''
+            set -e
+            echo "Building Docker image..."
+            docker build -t "${IMAGE_REPO}:${IMAGE_TAG}" -t "${IMAGE_REPO}:latest" .
+
+            echo "Logging into Docker Hub (non-interactive)..."
+            echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+
+            echo "Pushing image tags..."
+            docker push "${IMAGE_REPO}:${IMAGE_TAG}"
+            docker push "${IMAGE_REPO}:latest"
+
+            docker logout || true
+          '''
+        }
+      }
     }
 
-    stage("Another job") {
-        build job: "bmi-app deployment"
+    stage('Helm Deploy to OpenShift') {
+      when {
+        expression {
+          return !env.CHANGE_ID
+        }
+      }
+      steps {
+        sh '''
+          echo "Helm upgrade/install..."
+          helm upgrade --install bmi-chart helm/bmi-app             --namespace "${K8S_NAMESPACE}" --create-namespace             --set image.repository="${IMAGE_REPO}"             --set image.tag="${IMAGE_TAG}"
+
+          echo "Waiting for rollout..."
+          kubectl rollout status deploy/bmi-chart-deployment -n "${K8S_NAMESPACE}" --timeout=180s
+        '''
+      }
     }
 
-    stage("Archive") {
-        archiveArtifacts artifacts: 'image.tag', allowEmptyArchive: true
+    stage('Verify Pods') {
+      when {
+        expression {
+          return !env.CHANGE_ID
+        }
+      }
+      steps {
+        sh '''
+          echo "Pods in namespace:"
+          kubectl get pods -n "${K8S_NAMESPACE}" -o wide
+
+          echo "Services:"
+          kubectl get svc -n "${K8S_NAMESPACE}"
+        '''
+      }
     }
+  }
+
+  post {
+    success {
+      echo "✅ Success: ${IMAGE_REPO}:${IMAGE_TAG} deployed to ${K8S_NAMESPACE}"
+    }
+    failure {
+      echo "❌ Pipeline failed. Check the stage logs above."
+    }
+  }
 }
