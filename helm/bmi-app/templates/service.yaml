@@ -10,5 +10,5 @@ spec:
     app: bmi-app
   ports:
     - name: http
-      port: {{ .Values.service.port }}
-      targetPort: http
+      port: 80
+      targetPort: 3011

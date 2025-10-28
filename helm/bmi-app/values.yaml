@@ -4,7 +4,9 @@ image:
   tag: "01"
   pullPolicy: IfNotPresent
 
-replicaCount: 1
+replicaCount: 6
+monitoring:
+  enabled: true
 
 service:
   type: ClusterIP
@@ -32,9 +34,10 @@ metrics:
   path: /metrics
   port: "3011"
   serviceMonitor:
-    enabled: false
+    enabled: true
     interval: 15s
-    additionalLabels: {}
+    additionalLabels: 
+      release: kube-prometheus-stack
 
 ingress:
   enabled: false
