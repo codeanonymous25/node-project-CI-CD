@@ -3,10 +3,10 @@
   "version": "1.0.0",
   "private": false,
   "description": "Node.js BMI app exposing Prometheus metrics, deployable via Helm to OpenShift",
-  "main": "src/server.js",
+  "main": "src/routes.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "nodemon src/server.js",
+    "start": "node src/routes.js",
+    "dev": "nodemon src/routes.js",
     "lint": "eslint .",
     "test": "jest --runInBand"
   },
